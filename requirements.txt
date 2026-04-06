@@ -1,0 +1,6 @@
+gen ai related use cases 
+aws
+llm
+running a k8s cluster 
+use open ai for decision making for future load
+scaling strategies +auto implement
