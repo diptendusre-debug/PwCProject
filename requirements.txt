@@ -6,3 +6,17 @@ create the python script
 collect metrics from cloudwatch
 use open ai for decision making for future load
 scaling strategies +auto implement
+
+
+
+i need to build a python application which will forecast 
+demand using gen ai model on enterprise grade eks cluster and
+ dynamically autoscale the cluster.The process involves 
+ 1.collect metrics from cloudwatch 
+ 2. deploy demand forecasting model 
+ 3. Recommend resource scaling strategy 
+ 4. define resource optimization technique 
+ 5.scale the cluster either by node level or pod level 
+ 6. Orchestrating and monitoring feedback real time
+
+boto3 
