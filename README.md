@@ -1,8 +1,4 @@
 # PwCProject
-access_key: AKIAZWKTSM3UWB6AOBGK
-secret_access_key: 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
-
-
             aws_connect.py
 **********************************************************
 The provided code in aws_connect.py is a Python script that connects to an AWS account using the `boto3` library to list EC2 instances in a specified region. Here's a breakdown of its components and functionality:
