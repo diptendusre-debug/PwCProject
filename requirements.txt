@@ -46,5 +46,4 @@ Your proposed steps are logically sound for building a predictive, "brain-like" 
 * Cloud SDK: Use Boto3 to interact with AWS-specific scaling features if you need to adjust Auto Scaling Groups directly. [1, 8, 13, 14, 15] 
 
 
-access_key: AKIAZWKTSM3UWB6AOBGK 
-secret_access_key: 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
+
