@@ -26,7 +26,7 @@ def findEksMetrics(cloudwatch_client,clusterName):
             for metric in response['Metrics']:
                 metrics_found.append({
                     'MetricName': metric['MetricName'],
-                    Dimensions: metric['Dimensions']        
+                    'Dimensions': metric['Dimensions']        
                 })
         return metrics_found
     except Exception as e:
