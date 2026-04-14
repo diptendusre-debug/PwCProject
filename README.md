@@ -36,3 +36,26 @@ This function performs the core logic:
 To run the script, ensure `boto3` is installed (`pip install boto3`), provide valid AWS credentials, and execute it in a terminal. For more advanced usage, consider using AWS SDK best practices like session management.
 **********************************************************
 
+bash
+# 1. Create the cluster
+eksctl create cluster --name diptendu-demo-cluster --region us-east-1 --nodes 2 --managed
+
+# 2. Enable OIDC (Required for the add-on to use IAM roles)
+eksctl utils associate-iam-oidc-provider --cluster diptendu-demo-cluster --region us-east-1 --approve
+
+# 3. Create the IAM Role for the Add-on
+eksctl create iamserviceaccount \
+  --name cloudwatch-agent \
+  --namespace amazon-cloudwatch \
+  --cluster diptendu-demo-cluster \
+  --role-name EKS-CloudWatch-Observability-Role \
+  --attach-policy-arn arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy \
+  --attach-policy-arn arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess \
+  --role-only \
+  --approve
+
+# 4. Install the Add-on using that role
+aws eks create-addon \
+  --cluster-name diptendu-demo-cluster \
+  --addon-name amazon-cloudwatch-observability \
+  --service-account-role-arn arn:aws:iam::<YOUR_ACCOUNT_ID>:role/EKS-CloudWatch-Observability-Role
