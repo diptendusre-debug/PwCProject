@@ -30,7 +30,7 @@ def findEksMetrics(cloudwatch_client, clusterName):
             for metric in response['Metrics']:
                 metrics_found.append({
                     'MetricName': metric['MetricName'],
-                    'Dimensions': metric['Dimensions']
+                    Dimensions: metric['Dimensions']        
                 })
         return metrics_found
     except Exception as e:
@@ -130,36 +130,11 @@ if __name__ == "__main__":
     cluster_name = input("Enter EKS Cluster Name: ").strip()
 
     cloudwatch_client = establish_aws_connection(access_key, secret_key, region)
-    if not cloudwatch_client:
-        raise SystemExit(1)
-
-    metrics = findEksMetrics(cloudwatch_client, cluster_name)
-    if not metrics:
-        print(f"No metrics found for cluster {cluster_name}.")
-        raise SystemExit(0)
-
-    selected_metric = choose_metric(metrics)
-    if not selected_metric:
-        print("No valid metric selected.")
-        raise SystemExit(0)
-
-    statistic = input("Enter statistic to plot [Average]: ").strip() or 'Average'
-    period_input = input("Enter period in seconds [60]: ").strip()
-    try:
-        period = int(period_input) if period_input else 60
-    except ValueError:
-        period = 60
-
-    datapoints = fetch_metric_time_series(
-        cloudwatch_client,
-        namespace='ContainerInsights',
-        metric_name=selected_metric['MetricName'],
-        dimensions=selected_metric['Dimensions'],
-        period=period,
-        statistic=statistic
-    )
-
-    if datapoints:
-        plot_metric_time_series(datapoints, selected_metric['MetricName'], statistic, cluster_name)
-    else:
-        print("No metric data returned for the selected metric.")
+    if cloudwatch_client:
+        metrics = findEksMetrics(cloudwatch_client, cluster_name)
+        if metrics:
+            print(f"Metrics found for cluster {cluster_name}:")
+            for metric in metrics:
+                print(metric)
+        else:
+            print(f"No metrics found for cluster {cluster_name}.")

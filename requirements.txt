@@ -44,3 +44,6 @@ Your proposed steps are logically sound for building a predictive, "brain-like" 
 * RBAC Permissions: Your Python app will need a ClusterRole with permissions to get, list, watch metrics and patch deployments/statefulsets.
 * Node Scaling Tool: Use Karpenter instead of the standard Cluster Autoscaler. It responds significantly faster to the "Node Scale" signals your Python app will generate.
 * Cloud SDK: Use Boto3 to interact with AWS-specific scaling features if you need to adjust Auto Scaling Groups directly. [1, 8, 13, 14, 15] 
+
+
+
