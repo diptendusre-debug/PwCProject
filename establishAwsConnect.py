@@ -1,140 +1,204 @@
 import boto3
-from botocore.exceptions import ClientError, NoCredentialsError, PartialCredentialsError
 from datetime import datetime, timedelta, timezone
 import matplotlib.pyplot as plt
 
-# Create Function to establish connection to AWS
-def establish_aws_connection(clientId, clientSecret, region):
+# ---------------- AWS CONNECTION ----------------
+def establish_aws_connection(access_key, secret_key, region):
     try:
         session = boto3.Session(
-            aws_access_key_id=clientId,
-            aws_secret_access_key=clientSecret,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
             region_name=region
         )
-        cloudwatch_client = session.client('cloudwatch')
-        print("Connection to AWS established successfully.")
-        return cloudwatch_client
+        return session.client('cloudwatch')
     except Exception as e:
-        print(f"An error occurred while establishing connection to AWS: {e}")
+        print(f"AWS Connection Error: {e}")
         return None
 
-# Finds all metrics in the container insights namespace and returns them
-def findEksMetrics(cloudwatch_client, clusterName):
-    try:
-        paginator = cloudwatch_client.get_paginator('list_metrics')
-        metrics_found = []
-        for response in paginator.paginate(
-            Namespace='ContainerInsights',
-            Dimensions=[{'Name': 'ClusterName', 'Value': clusterName}]
-        ):
-            for metric in response['Metrics']:
-                metrics_found.append({
-                    'MetricName': metric['MetricName'],
-                    Dimensions: metric['Dimensions']        
-                })
-        return metrics_found
-    except Exception as e:
-        print(f"An error occurred while finding EKS metrics: {e}")
-        return []
+# ---------------- CLOUDWATCH METRICS ----------------
+DEPLOYMENT_DIMENSION_CANDIDATES = [
+    'DeploymentName',
+    'Deployment',
+    'WorkloadName',
+    'Workload',
+    'KubernetesDeployment'
+]
 
-# Fetch CloudWatch time series for one metric
-def fetch_metric_time_series(
-    cloudwatch_client,
-    namespace,
-    metric_name,
-    dimensions,
-    start_time=None,
-    end_time=None,
-    period=60,
-    statistic='Average'
-):
-    try:
-        if end_time is None:
-            end_time = datetime.now(timezone.utc)
-        if start_time is None:
-            start_time = end_time - timedelta(minutes=30)
+def list_deployment_metrics(cw_client, cluster, namespace, deployment_name):
+    paginator = cw_client.get_paginator('list_metrics')
+    discovered = []
 
-        response = cloudwatch_client.get_metric_statistics(
-            Namespace=namespace,
-            MetricName=metric_name,
-            Dimensions=dimensions,
-            StartTime=start_time,
-            EndTime=end_time,
-            Period=period,
-            Statistics=[statistic]
-        )
-        return sorted(response.get('Datapoints', []), key=lambda item: item['Timestamp'])
-    except Exception as e:
-        print(f"An error occurred while fetching metric data: {e}")
-        return []
+    for response in paginator.paginate(
+        Namespace='ContainerInsights',
+        Dimensions=[
+            {'Name': 'ClusterName', 'Value': cluster},
+            {'Name': 'Namespace', 'Value': namespace}
+        ]
+    ):
+        for metric in response.get('Metrics', []):
+            if any(
+                dim.get('Name') in DEPLOYMENT_DIMENSION_CANDIDATES and dim.get('Value') == deployment_name
+                for dim in metric.get('Dimensions', [])
+            ):
+                discovered.append(metric)
 
-# Plot metric time series and save to PNG
-def plot_metric_time_series(datapoints, metric_name, statistic, cluster_name):
-    if not datapoints:
-        print("No datapoints available for plotting.")
-        return None
+    if discovered:
+        print(f"\nDiscovered deployment metrics for '{deployment_name}':")
+        for metric in discovered:
+            print(f"  - {metric['MetricName']} | Dimensions: {metric['Dimensions']}")
+    else:
+        print(f"\nNo deployment metrics discovered for '{deployment_name}' under cluster '{cluster}' and namespace '{namespace}'.")
 
-    timestamps = [point['Timestamp'] for point in datapoints]
-    values = [point.get(statistic) for point in datapoints]
+    return discovered
 
-    plt.figure(figsize=(10, 5))
-    plt.plot(timestamps, values, marker='o', linestyle='-')
-    plt.title(f"{metric_name} ({statistic}) for {cluster_name}")
-    plt.xlabel('Time (UTC)')
-    plt.ylabel(statistic)
-    plt.grid(True)
-    plt.tight_layout()
 
-    file_name = f"{metric_name.replace(' ', '_')}_{statistic}.png"
-    plt.savefig(file_name)
-    plt.close()
-
-    print(f"Saved plot to {file_name}")
-    return file_name
-
-# Print a summary of available metrics for selection
-def print_metric_summary(metrics):
+def choose_discovered_metrics(metrics):
     unique_names = []
     for metric in metrics:
-        name = metric['MetricName']
-        if name not in unique_names:
+        name = metric.get('MetricName')
+        if name and name not in unique_names:
             unique_names.append(name)
 
-    print("\nAvailable metrics:")
-    for index, name in enumerate(unique_names[:20], start=1):
+    if not unique_names:
+        return []
+
+    print("\nAvailable discovered deployment metrics:")
+    for index, name in enumerate(unique_names, start=1):
         print(f"  {index}. {name}")
-    if len(unique_names) > 20:
-        print(f"  ...and {len(unique_names) - 20} more metrics")
-    return unique_names
 
-# Allow the user to choose a metric to visualize
-def choose_metric(metrics):
-    unique_names = print_metric_summary(metrics)
-    choice = input("Enter metric name or number to visualize (press Enter for first metric): ").strip()
+    choice = input(
+        "Enter metric number(s) to fetch (comma-separated), or press Enter to fetch all discovered metrics: "
+    ).strip()
 
-    if not choice and unique_names:
-        return next((m for m in metrics if m['MetricName'] == unique_names[0]), metrics[0])
+    if not choice:
+        return unique_names
 
-    if choice.isdigit():
-        index = int(choice) - 1
-        if 0 <= index < len(unique_names):
-            selected_name = unique_names[index]
-            return next((m for m in metrics if m['MetricName'] == selected_name), None)
-
-    return next((m for m in metrics if m['MetricName'].lower() == choice.lower()), None)
-
-if __name__ == "__main__":
-    region = input("Enter AWS Region (e.g., ap-south-1): ").strip()
-    access_key = input("Enter AWS Access Key: ").strip()
-    secret_key = input("Enter AWS Secret Key: ").strip()
-    cluster_name = input("Enter EKS Cluster Name: ").strip()
-
-    cloudwatch_client = establish_aws_connection(access_key, secret_key, region)
-    if cloudwatch_client:
-        metrics = findEksMetrics(cloudwatch_client, cluster_name)
-        if metrics:
-            print(f"Metrics found for cluster {cluster_name}:")
-            for metric in metrics:
-                print(metric)
+    selected = []
+    for part in choice.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        if part.isdigit():
+            idx = int(part) - 1
+            if 0 <= idx < len(unique_names):
+                selected.append(unique_names[idx])
         else:
-            print(f"No metrics found for cluster {cluster_name}.")
+            if part in unique_names:
+                selected.append(part)
+
+    return selected
+
+
+def find_deployment_dimension(cw_client, cluster, namespace, deployment_name, metric_name):
+    paginator = cw_client.get_paginator('list_metrics')
+
+    for response in paginator.paginate(
+        Namespace='ContainerInsights',
+        Dimensions=[
+            {'Name': 'ClusterName', 'Value': cluster},
+            {'Name': 'Namespace', 'Value': namespace}
+        ]
+    ):
+        for metric in response.get('Metrics', []):
+            if metric.get('MetricName') != metric_name:
+                continue
+            for dim in metric.get('Dimensions', []):
+                if dim.get('Name') in DEPLOYMENT_DIMENSION_CANDIDATES and dim.get('Value') == deployment_name:
+                    return dim.get('Name')
+    return None
+
+
+def get_deployment_metrics(cw_client, cluster, namespace, deployment_name, metric_name, period=60, minutes=10):
+    end_time = datetime.now(timezone.utc)
+    start_time = end_time - timedelta(minutes=minutes)
+
+    for dimension_name in DEPLOYMENT_DIMENSION_CANDIDATES:
+        try:
+            response = cw_client.get_metric_statistics(
+                Namespace='ContainerInsights',
+                MetricName=metric_name,
+                Dimensions=[
+                    {'Name': 'ClusterName', 'Value': cluster},
+                    {'Name': 'Namespace', 'Value': namespace},
+                    {'Name': dimension_name, 'Value': deployment_name}
+                ],
+                StartTime=start_time,
+                EndTime=end_time,
+                Period=period,
+                Statistics=['Average']
+            )
+
+            datapoints = sorted(response.get('Datapoints', []), key=lambda x: x['Timestamp'])
+            if datapoints:
+                print(f"Using dimension '{dimension_name}' for deployment metric '{metric_name}'")
+                return datapoints
+        except Exception as e:
+            print(f"CloudWatch Error ({dimension_name}): {e}")
+
+    return []
+
+# ---------------- PLOT ----------------
+def plot_metrics(datapoints, metric_label, deployment):
+    if not datapoints:
+        print(f"No data found for {metric_label}")
+        return
+
+    times = [p['Timestamp'].strftime('%H:%M') for p in datapoints]
+    values = [p['Average'] for p in datapoints]
+
+    plt.figure(figsize=(10, 5))
+    plt.plot(times, values, marker='o')
+    plt.title(f"{deployment} - {metric_label} (Last {len(datapoints)} points)")
+    plt.xlabel("Time (UTC)")
+    plt.ylabel(metric_label)
+    plt.grid(True)
+
+    file_name = f"{deployment}_{metric_label.lower().replace(' ', '_')}.png"
+    plt.savefig(file_name)
+    print(f"Saved: {file_name}")
+    plt.close()
+
+# ---------------- MAIN ----------------
+if __name__ == "__main__":
+    region = input("AWS Region: ").strip()
+    access_key = input("Access Key: ").strip()
+    secret_key = input("Secret Key: ").strip()
+    cluster = input("Cluster Name: ").strip()
+    namespace = input("Namespace: ").strip()
+    deployment = input("Deployment Name: ").strip()
+
+    cw = establish_aws_connection(access_key, secret_key, region)
+    if not cw:
+        exit(1)
+
+    if not deployment:
+        print("Deployment Name is required to fetch deployment metrics.")
+        exit(1)
+
+    metrics = [
+        {'name': 'pod_cpu_utilization', 'label': 'CPU Utilization (%)'},
+        {'name': 'pod_memory_utilization', 'label': 'Memory Utilization (%)'}
+    ]
+
+    available_metrics = list_deployment_metrics(cw, cluster, namespace, deployment)
+    if not available_metrics:
+        print("Please verify the deployment name, namespace, cluster, and CloudWatch ContainerInsights setup.")
+        exit(1)
+
+    selected_metric_names = choose_discovered_metrics(available_metrics)
+    if not selected_metric_names:
+        print("No metrics selected. Exiting.")
+        exit(0)
+
+    for metric_name in selected_metric_names:
+        print(f"\nFetching metric '{metric_name}' for deployment '{deployment}'...")
+        datapoints = get_deployment_metrics(
+            cw,
+            cluster,
+            namespace,
+            deployment,
+            metric_name
+        )
+        if not datapoints:
+            print(f"No datapoints returned for metric '{metric_name}'.")
+        plot_metrics(datapoints, metric_name, deployment)
