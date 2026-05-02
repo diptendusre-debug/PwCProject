@@ -6,39 +6,64 @@ from openai import OpenAI
 from kubernetes import client, config
 import matplotlib.pyplot as plt
 
-
-
 # --- CONFIGURATION ---
-OPENAI_API_KEY = "your-api-key-here"
-client_ai = OpenAI(api_key='sk-proj--')
+# Applying the custom URL as requested
+client_ai = OpenAI(
+    api_key='sk-JgUa',
+    base_url="" 
+)
+
+# ---------------- AWS CONNECTION (FIXED) ----------------
+def establish_aws_connection(access_key, secret_key, region):
+    try:
+        session = boto3.Session(
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name=region
+        )
+        return session.client('cloudwatch')
+    except Exception as e:
+        print(f"❌ AWS Connection Error: {e}")
+        return None
 
 # ---------------- 1. COLLECT METRICS (CLOUDWATCH) ----------------
 def get_metrics_data(cw_client, cluster, namespace, pod_name):
     end_time = datetime.now(timezone.utc)
-    start_time = end_time - timedelta(hours=2) # Fetch last 2 hours for better forecasting
+    # Using 2 hours of data to give Prophet enough history to learn trends
+    start_time = end_time - timedelta(hours=2) 
     
-    response = cw_client.get_metric_statistics(
-        Namespace='ContainerInsights',
-        MetricName='pod_cpu_utilization',
-        Dimensions=[
-            {'Name': 'ClusterName', 'Value': cluster},
-            {'Name': 'Namespace', 'Value': namespace},
-            {'Name': 'PodName', 'Value': pod_name}
-        ],
-        StartTime=start_time, EndTime=end_time,
-        Period=60, Statistics=['Average']
-    )
-    
-    # Convert to Pandas DataFrame for Prophet
-    df = pd.DataFrame(response['Datapoints'])
-    if df.empty: return None
-    
-    df = df[['Timestamp', 'Average']].rename(columns={'Timestamp': 'ds', 'Average': 'y'})
-    df['ds'] = df['ds'].dt.tz_localize(None) # Prophet requires timezone-naive
-    return df
+    try:
+        response = cw_client.get_metric_statistics(
+            Namespace='ContainerInsights',
+            MetricName='pod_cpu_utilization',
+            Dimensions=[
+                {'Name': 'ClusterName', 'Value': cluster},
+                {'Name': 'Namespace', 'Value': namespace},
+                {'Name': 'PodName', 'Value': pod_name}
+            ],
+            StartTime=start_time, EndTime=end_time,
+            Period=60, Statistics=['Average']
+        )
+        
+        df = pd.DataFrame(response.get('Datapoints', []))
+        if df.empty: 
+            return None
+        
+        # Sort and format for Prophet (ds and y columns)
+        df = df.sort_values('Timestamp')
+        df = df[['Timestamp', 'Average']].rename(columns={'Timestamp': 'ds', 'Average': 'y'})
+        df['ds'] = df['ds'].dt.tz_localize(None) 
+        return df
+    except Exception as e:
+        print(f"❌ Error fetching CloudWatch data: {e}")
+        return None
 
 # ---------------- 2. FORECAST DEMAND (PROPHET) ----------------
 def forecast_demand(df):
+    # Suppress prophet logs for cleaner output
+    import logging
+    logging.getLogger('prophet').setLevel(logging.ERROR)
+    
     model = Prophet(interval_width=0.95)
     model.fit(df)
     
@@ -46,26 +71,24 @@ def forecast_demand(df):
     future = model.make_future_dataframe(periods=15, freq='min')
     forecast = model.predict(future)
     
-    # Get the predicted value for the next 5 minutes
+    # Get the predicted value for the end of the 15-min window
     predicted_cpu = forecast.iloc[-1]['yhat']
     return round(predicted_cpu, 2)
 
 # ---------------- 3. DECISION MAKING (OPENAI) ----------------
 def get_ai_scaling_decision(predicted_load):
-    prompt = f"""
-    The predicted pod CPU utilization for the next 15 minutes is {predicted_load}%.
-    If utilization is > 5%, recommend scaling to 2 replicas.
-    If utilization is <= 5%, recommend scaling to 1 replica.
-    Return ONLY the number of replicas as an integer.
-    """
+    prompt = f"The predicted pod CPU utilization for the next 15 minutes is {predicted_load}%. If utilization is > 5%, return '2'. If <= 5%, return '1'. Return ONLY the integer."
     
-    response = client_ai.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    
-    decision = response.choices[0].message.content.strip()
-    return int(decision)
+    try:
+        response = client_ai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        decision = response.choices[0].message.content.strip()
+        return int(decision)
+    except Exception as e:
+        print(f"❌ AI API Error: {e}")
+        return 1 # Default fallback
 
 # ---------------- 4. EXECUTE SCALING (K8S) ----------------
 def scale_k8s(namespace, deployment_name, target_replicas):
@@ -81,40 +104,35 @@ def scale_k8s(namespace, deployment_name, target_replicas):
             deployment.spec.replicas = target_replicas
             apps_v1.patch_namespaced_deployment(name=deployment_name, namespace=namespace, body=deployment)
         else:
-            print(f"✅ AI Decision: Maintain {current} replicas (Load stable).")
+            print(f"✅ AI Decision: Maintain {current} replicas.")
     except Exception as e:
-        print(f"❌ K8s Error: {e}")
+        print(f"❌ K8s Scaling Error: {e}")
 
 # ---------------- MAIN ORCHESTRATOR ----------------
 if __name__ == "__main__":
-    # AWS Setup
-    region = input("AWS Region: ")
-    cw = boto3.Session(
-        aws_access_key_id=input("Access Key: "),
-        aws_secret_access_key=input("Secret Key: "),
-        region_name=region
-    ).client('cloudwatch')
+    reg = input("AWS Region: ").strip()
+    key = input("Access Key: ").strip()
+    sec = input("Secret Key: ").strip()
     
-    cluster = input("Cluster Name: ")
-    ns = input("Namespace: ")
-    pod = input("Pod Name: ")
-    deploy = input("Deployment Name: ")
+    cw = establish_aws_connection(key, sec, reg)
+    
+    if cw:
+        cluster_name = input("Cluster Name: ").strip()
+        ns = input("Namespace: ").strip()
+        pod = input("Pod Name: ").strip()
+        deploy = input("Deployment Name: ").strip()
 
-    # Step 1: Collect
-    print("\n📡 Collecting historical metrics...")
-    df_metrics = get_metrics_data(cw, cluster, ns, pod)
+        print("\n📡 Collecting historical metrics...")
+        df_metrics = get_metrics_data(cw, cluster_name, ns, pod)
 
-    if df_metrics is not None:
-        # Step 2: Forecast
-        print("🔮 Forecasting future demand with Prophet...")
-        predicted_load = forecast_demand(df_metrics)
-        print(f"📈 Predicted CPU Load: {predicted_load}%")
+        if df_metrics is not None:
+            print("🔮 Forecasting future demand...")
+            predicted_load = forecast_demand(df_metrics)
+            print(f"📈 Predicted CPU Load: {predicted_load}%")
 
-        # Step 3: Recommend
-        print("🧠 Consulting AI for scaling strategy...")
-        target_replicas = get_ai_scaling_decision(predicted_load)
+            print("🧠 Consulting AI via Custom URL...")
+            target = get_ai_scaling_decision(predicted_load)
 
-        # Step 4: Scale
-        scale_k8s(ns, deploy, target_replicas)
-    else:
-        print("❌ No data found to analyze.")
+            scale_k8s(ns, deploy, target)
+        else:
+            print("❌ No data found. Ensure ContainerInsights is enabled for this pod.")
